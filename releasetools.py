@@ -1,5 +1,5 @@
 # Copyright (C) 2009 The Android Open Source Project
-# Copyright (c) 2011-2013, The Linux Foundation. All rights reserved.
+# Copyright (c) 2011-2013, 2020 The Linux Foundation. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -17,6 +17,7 @@
 (installing the radio image)."""
 
 import common
+import os
 import re
 
 
@@ -24,16 +25,29 @@ bootImages = {}
 binImages = {}
 fwImages = {}
 
+# List of images that we pick from IMAGES/ in target-files.
+target_files_IMAGES_list = ["vbmeta.img", "dtbo.img", "vbmeta_system.img"]
+
+# The joined list of user image partitions of source and target builds.
+# - Items should be added to the list if new dynamic partitions are added.
+# - Items should not be removed from the list even if dynamic partitions are
+#   deleted. When generating an incremental OTA package, this script needs to
+#   know that an image is present in source build but not in target build.
+USERIMAGE_PARTITIONS = [
+    "product",
+    "system_ext",
+    "odm",
+]
 
 # Parse filesmap file containing firmware residing places
 def LoadFilesMap(zip, name="RADIO/filesmap"):
   try:
     data = zip.read(name)
   except KeyError:
-    print "Warning: could not find %s in %s." % (name, zip)
+    print ("Warning: could not find %s in %s." % (name, zip))
     data = ""
   d = {}
-  for line in data.split("\n"):
+  for line in data.decode("utf-8").split('\n'):
     line = line.strip()
     if not line or line.startswith("#"):
       continue
@@ -55,6 +69,14 @@ def GetRadioFiles(z):
         continue
       data = z.read(f)
       out[fn] = common.File(f, data)
+
+    # This is to include vbmeta,dtbo images from IMAGES/ folder.
+    if f.startswith("IMAGES/") and (f.__len__() > len("IMAGES/")):
+      fn = f[7:]
+      if (fn in target_files_IMAGES_list):
+        data = z.read(f)
+        out[fn] = common.File(f, data)
+
   return out
 
 
@@ -69,12 +91,17 @@ def GetFileDestination(fn, filesmap):
   if fn + ".bak" in filesmap:
     backup = filesmap[fn + ".bak"]
 
+  # Assert if an image belonging to target_files_IMAGES_list is not found in filesmap
+  # but found in IMAGES/ as these are critical images like vbmeta/dtbo etc.
+  if fn in target_files_IMAGES_list and fn not in filesmap:
+    raise common.ExternalError("Filesmap entry for "+ fn +" missing !!")
+
   # If full filename is not specified in filesmap get only the name part
   # and look for this token
   if fn not in filesmap:
     fn = fn.split(".")[0] + ".*"
     if fn not in filesmap:
-      print "warning radio-update: '%s' not found in filesmap" % (fn)
+      print ("warning radio-update: '%s' not found in filesmap" % (fn))
       return None, backup
   return filesmap[fn], backup
 
@@ -93,7 +120,7 @@ def SplitFwTypes(files):
         break
       extIdx -= 1
 
-    if dotSeparated[extIdx] == 'mbn':
+    if dotSeparated[extIdx] == 'mbn' or dotSeparated[extIdx] == 'elf' or  dotSeparated[extIdx] == 'img':
       boot[f] = files[f]
     elif dotSeparated[extIdx] == 'bin':
       bin[f] = files[f]
@@ -105,30 +132,30 @@ def SplitFwTypes(files):
 # Prepare radio-update files and verify them
 def OTA_VerifyEnd(info, api_version, target_zip, source_zip=None):
   if api_version < 3:
-    print "warning radio-update: no support for api_version less than 3"
+    print ("warning radio-update: no support for api_version less than 3")
     return False
 
-  print "Loading radio filesmap..."
+  print ("Loading radio filesmap...")
   filesmap = LoadFilesMap(target_zip)
   if filesmap == {}:
-    print "warning radio-update: no or invalid filesmap file found"
+    print ("warning radio-update: no or invalid filesmap file found")
     return False
 
-  print "Loading radio target..."
+  print ("Loading radio target...")
   tgt_files = GetRadioFiles(target_zip)
   if tgt_files == {}:
-    print "warning radio-update: no radio images in input target_files"
+    print ("warning radio-update: no radio images in input target_files")
     return False
 
   src_files = None
   if source_zip is not None:
-    print "Loading radio source..."
+    print ("Loading radio source...")
     src_files = GetRadioFiles(source_zip)
 
   update_list = {}
   largest_source_size = 0
 
-  print "Preparing radio-update files..."
+  print ("Preparing radio-update files...")
   for fn in tgt_files:
     dest, destBak = GetFileDestination(fn, filesmap)
     if dest is None:
@@ -320,7 +347,7 @@ def InstallFwImages(script, files):
 
 
 def OTA_InstallEnd(info):
-  print "Applying radio-update script modifications..."
+  print ("Applying radio-update script modifications...")
   info.script.Comment("---- radio update tasks ----")
   info.script.Print("Patching firmware images...")
 
@@ -340,7 +367,7 @@ def FullOTA_InstallEnd_MMC(info):
 
 
 def FullOTA_InstallEnd_MTD(info):
-  print "warning radio-update: radio update for NAND devices not supported"
+  print ("warning radio-update: radio update for NAND devices not supported")
   return
 
 
@@ -354,9 +381,32 @@ def IncrementalOTA_InstallEnd_MMC(info):
 
 
 def IncrementalOTA_InstallEnd_MTD(info):
-  print "warning radio-update: radio update for NAND devices not supported"
+  print ("warning radio-update: radio update for NAND devices not supported")
   return
 
 def IncrementalOTA_InstallEnd(info):
   IncrementalOTA_InstallEnd_MMC(info)
   return
+
+def GetUserImages(input_tmp, input_zip):
+  return {partition: common.GetUserImage(partition, input_tmp, input_zip)
+          for partition in USERIMAGE_PARTITIONS
+          if os.path.exists(os.path.join(input_tmp,
+                                         "IMAGES", partition + ".img"))}
+
+def FullOTA_GetBlockDifferences(info):
+  images = GetUserImages(info.input_tmp, info.input_zip)
+  return [common.BlockDifference(partition, image)
+          for partition, image in images.items()]
+
+def IncrementalOTA_GetBlockDifferences(info):
+  source_images = GetUserImages(info.source_tmp, info.source_zip)
+  target_images = GetUserImages(info.target_tmp, info.target_zip)
+
+  # Use EmptyImage() as a placeholder for partitions that will be deleted.
+  for partition in source_images:
+    target_images.setdefault(partition, common.EmptyImage())
+
+  # Use source_images.get() because new partitions are not in source_images.
+  return [common.BlockDifference(partition, target_image, source_images.get(partition))
+          for partition, target_image in target_images.items()]

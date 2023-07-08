@@ -8,64 +8,37 @@
 # variables defined. build/core/Makefile will overwrite these
 # variables again.
 ifneq ($(strip $(TARGET_NO_KERNEL)),true)
-INSTALLED_BOOTIMAGE_TARGET := $(PRODUCT_OUT)/boot.img
+
+ifneq ($(strip $(BOARD_KERNEL_BINARIES)),)
+  BUILT_BOOTIMAGE_TARGET := $(foreach k,$(subst kernel,boot,$(BOARD_KERNEL_BINARIES)), $(PRODUCT_OUT)/$(k).img)
+else
+  BUILT_BOOTIMAGE_TARGET := $(PRODUCT_OUT)/boot.img
+endif
+
+INSTALLED_BOOTIMAGE_TARGET := $(BUILT_BOOTIMAGE_TARGET)
+
+ifeq ($(PRODUCT_BUILD_RAMDISK_IMAGE),true)
 INSTALLED_RAMDISK_TARGET := $(PRODUCT_OUT)/ramdisk.img
+endif
+ifeq ($(PRODUCT_BUILD_SYSTEM_IMAGE),true)
 INSTALLED_SYSTEMIMAGE := $(PRODUCT_OUT)/system.img
+endif
+ifeq ($(PRODUCT_BUILD_USERDATA_IMAGE),true)
 INSTALLED_USERDATAIMAGE_TARGET := $(PRODUCT_OUT)/userdata.img
+endif
+ifneq ($(TARGET_NO_RECOVERY), true)
 INSTALLED_RECOVERYIMAGE_TARGET := $(PRODUCT_OUT)/recovery.img
+else
+INSTALLED_RECOVERYIMAGE_TARGET :=
+endif
 recovery_ramdisk := $(PRODUCT_OUT)/ramdisk-recovery.img
-INSTALLED_USBIMAGE_TARGET := $(PRODUCT_OUT)/usbmsc.img
-INSTALLED_CACHEIMAGE_TARGET := $(PRODUCT_OUT)/cache.img
-endif
-
-#---------------------------------------------------------------------
-#Add systemimage as a dependency on userdata.img
-#---------------------------------------------------------------------
-$(INSTALLED_USERDATAIMAGE_TARGET) : systemimage \
-                                    $(INTERNAL_USERIMAGES_DEPS) \
-                                    $(INTERNAL_USERDATAIMAGE_FILES)
-
-#----------------------------------------------------------------------
-# Generate secure boot image
-#----------------------------------------------------------------------
-ifeq ($(TARGET_BOOTIMG_SIGNED),true)
-INSTALLED_SEC_BOOTIMAGE_TARGET := $(PRODUCT_OUT)/boot.img.secure
-INSTALLED_SEC_RECOVERYIMAGE_TARGET := $(PRODUCT_OUT)/recovery.img.secure
-
-ifneq ($(BUILD_TINY_ANDROID),true)
-intermediates := $(call intermediates-dir-for,PACKAGING,recovery_patch)
-RECOVERY_FROM_BOOT_PATCH := $(intermediates)/recovery_from_boot.p
-endif
-
-ifndef TARGET_SHA_TYPE
-  TARGET_SHA_TYPE := sha256
-endif
-
-define build-boot-image
-	$(hide) mv -f $(1) $(1).nonsecure
-	$(hide) openssl dgst -$(TARGET_SHA_TYPE) -binary $(1).nonsecure > $(1).$(TARGET_SHA_TYPE)
-	$(hide) openssl rsautl -sign -in $(1).$(TARGET_SHA_TYPE) -inkey $(PRODUCT_PRIVATE_KEY) -out $(1).sig
-	$(hide) dd if=/dev/zero of=$(1).sig.padded bs=$(BOARD_KERNEL_PAGESIZE) count=1
-	$(hide) dd if=$(1).sig of=$(1).sig.padded conv=notrunc
-	$(hide) cat $(1).nonsecure $(1).sig.padded > $(1).secure
-	$(hide) rm -rf $(1).$(TARGET_SHA_TYPE) $(1).sig $(1).sig.padded
-	$(hide) mv -f $(1).secure $(1)
-endef
-
-$(INSTALLED_SEC_BOOTIMAGE_TARGET): $(INSTALLED_BOOTIMAGE_TARGET) $(RECOVERY_FROM_BOOT_PATCH)
-	$(hide) $(call build-boot-image,$(INSTALLED_BOOTIMAGE_TARGET),$(INTERNAL_BOOTIMAGE_ARGS))
-
-$(INSTALLED_SEC_RECOVERYIMAGE_TARGET): $(INSTALLED_RECOVERYIMAGE_TARGET) $(RECOVERY_FROM_BOOT_PATCH)
-	$(hide) $(call build-boot-image,$(INSTALLED_RECOVERYIMAGE_TARGET),$(INTERNAL_RECOVERYIMAGE_ARGS))
-
-ALL_DEFAULT_INSTALLED_MODULES += $(INSTALLED_SEC_BOOTIMAGE_TARGET) $(INSTALLED_SEC_RECOVERYIMAGE_TARGET)
-ALL_MODULES.$(LOCAL_MODULE).INSTALLED += $(INSTALLED_SEC_BOOTIMAGE_TARGET)
-ALL_MODULES.$(LOCAL_MODULE).INSTALLED += $(INSTALLED_SEC_RECOVERYIMAGE_TARGET)
+INSTALLED_USBIMAGE_TARGET := $(PRODUCT_OUT)/usbdisk.img
 endif
 
 #----------------------------------------------------------------------
 # Generate persist image (persist.img)
 #----------------------------------------------------------------------
+ifneq ($(strip $(BOARD_PERSISTIMAGE_PARTITION_SIZE)),)
 ifneq ($(strip $(TARGET_NO_KERNEL)),true)
 
 TARGET_OUT_PERSIST := $(PRODUCT_OUT)/persist
@@ -78,9 +51,9 @@ INSTALLED_PERSISTIMAGE_TARGET := $(PRODUCT_OUT)/persist.img
 define build-persistimage-target
     $(call pretty,"Target persist fs image: $(INSTALLED_PERSISTIMAGE_TARGET)")
     @mkdir -p $(TARGET_OUT_PERSIST)
-    $(hide) $(MKEXTUSERIMG) -s $(TARGET_OUT_PERSIST) $@ ext4 persist $(BOARD_PERSISTIMAGE_PARTITION_SIZE)
+    $(hide) PATH=$(HOST_OUT_EXECUTABLES):$${PATH} $(MKEXTUSERIMG) $(TARGET_OUT_PERSIST) $@ ext4 persist $(BOARD_PERSISTIMAGE_PARTITION_SIZE)
     $(hide) chmod a+r $@
-    $(hide) $(call assert-max-image-size,$@,$(BOARD_PERSISTIMAGE_PARTITION_SIZE),yaffs)
+    $(hide) $(call assert-max-image-size,$@,$(BOARD_PERSISTIMAGE_PARTITION_SIZE))
 endef
 
 $(INSTALLED_PERSISTIMAGE_TARGET): $(MKEXTUSERIMG) $(MAKE_EXT4FS) $(INTERNAL_PERSISTIMAGE_FILES)
@@ -88,7 +61,71 @@ $(INSTALLED_PERSISTIMAGE_TARGET): $(MKEXTUSERIMG) $(MAKE_EXT4FS) $(INTERNAL_PERS
 
 ALL_DEFAULT_INSTALLED_MODULES += $(INSTALLED_PERSISTIMAGE_TARGET)
 ALL_MODULES.$(LOCAL_MODULE).INSTALLED += $(INSTALLED_PERSISTIMAGE_TARGET)
+droidcore: $(INSTALLED_PERSISTIMAGE_TARGET)
 
+.PHONY: persistimage
+persistimage: $(INSTALLED_PERSISTIMAGE_TARGET)
+
+endif
+endif
+
+#----------------------------------------------------------------------
+# Generate metadata image (metadata.img)
+# As of now this in empty at build and data is runtime generated only,
+# so create an empty fs
+#----------------------------------------------------------------------
+ifneq ($(strip $(BOARD_METADATAIMAGE_PARTITION_SIZE)),)
+
+TARGET_OUT_METADATA := $(PRODUCT_OUT)/metadata
+
+INSTALLED_METADATAIMAGE_TARGET := $(PRODUCT_OUT)/metadata.img
+
+define build-metadataimage-target
+    $(call pretty,"Target metadata fs image: $(INSTALLED_METADATAIMAGE_TARGET)")
+    @mkdir -p $(TARGET_OUT_METADATA)
+    $(hide)PATH=$(HOST_OUT_EXECUTABLES):$${PATH} $(MKEXTUSERIMG) -s $(TARGET_OUT_METADATA) $@ ext4 metadata $(BOARD_METADATAIMAGE_PARTITION_SIZE)
+    $(hide) chmod a+r $@
+endef
+
+$(INSTALLED_METADATAIMAGE_TARGET): $(MKEXTUSERIMG) $(MAKE_EXT4FS)
+	$(build-metadataimage-target)
+
+ALL_DEFAULT_INSTALLED_MODULES += $(INSTALLED_METADATAIMAGE_TARGET)
+ALL_MODULES.$(LOCAL_MODULE).INSTALLED += $(INSTALLED_METADATAIMAGE_TARGET)
+droidcore: $(INSTALLED_METADATAIMAGE_TARGET)
+
+.PHONY: metadataimage
+metadataimage: $(INSTALLED_METADATAIMAGE_TARGET)
+
+endif
+
+#----------------------------------------------------------------------
+# Generate device tree overlay image (dtbo.img)
+#----------------------------------------------------------------------
+ifneq ($(strip $(TARGET_NO_KERNEL)),true)
+ifeq ($(strip $(BOARD_KERNEL_SEPARATED_DTBO)),true)
+
+MKDTIMG := $(HOST_OUT_EXECUTABLES)/mkdtimg$(HOST_EXECUTABLE_SUFFIX)
+
+# Most specific paths must come first in possible_dtbo_dirs
+possible_dtbo_dirs = $(KERNEL_OUT)/arch/$(TARGET_KERNEL_ARCH)/boot/dts $(KERNEL_OUT)/arch/arm/boot/dts
+$(shell mkdir -p $(possible_dtbo_dirs))
+dtbo_dir = $(firstword $(wildcard $(possible_dtbo_dirs)))
+dtbo_objs = $(shell find $(dtbo_dir) -name \*.dtbo)
+
+define build-dtboimage-target
+    $(call pretty,"Target dtbo image: $(BOARD_PREBUILT_DTBOIMAGE)")
+    $(hide) $(MKDTIMG) create $@ --page_size=$(BOARD_KERNEL_PAGESIZE) $(dtbo_objs)
+    $(hide) chmod a+r $@
+endef
+
+# Definition of BOARD_PREBUILT_DTBOIMAGE is in AndroidBoardCommon.mk
+# so as to ensure it is defined well in time to set the dependencies on
+# BOARD_PREBUILT_DTBOIMAGE
+$(BOARD_PREBUILT_DTBOIMAGE): $(MKDTIMG) $(INSTALLED_KERNEL_TARGET)
+	$(build-dtboimage-target)
+
+endif
 endif
 
 #----------------------------------------------------------------------
@@ -104,7 +141,8 @@ DTBTOOL := $(HOST_OUT_EXECUTABLES)/dtbTool$(HOST_EXECUTABLE_SUFFIX)
 
 INSTALLED_DTIMAGE_TARGET := $(PRODUCT_OUT)/dt.img
 
-possible_dtb_dirs = $(KERNEL_OUT)/arch/$(TARGET_KERNEL_ARCH)/boot/dts/ $(KERNEL_OUT)/arch/arm/boot/dts/ $(KERNEL_OUT)/arch/arm/boot/
+# Most specific paths must come first in possible_dtb_dirs
+possible_dtb_dirs = $(KERNEL_OUT)/arch/$(TARGET_KERNEL_ARCH)/boot/dts/qcom/ $(KERNEL_OUT)/arch/arm/boot/dts/qcom/ $(KERNEL_OUT)/arch/$(TARGET_KERNEL_ARCH)/boot/dts/ $(KERNEL_OUT)/arch/arm/boot/dts/ $(KERNEL_OUT)/arch/arm/boot/
 dtb_dir = $(firstword $(wildcard $(possible_dtb_dirs)))
 
 define build-dtimage-target
@@ -122,506 +160,21 @@ endif
 endif
 
 #---------------------------------------------------------------------
-# Generate usbmsc.img image
-# Please NOTICE: the valid max size of usbmsc.bin is 1GB
+# Generate usbdisk.img FAT32 image
+# Please NOTICE: the valid max size of usbdisk.bin is 10GB
 #---------------------------------------------------------------------
-
-ifneq ($(strip $(TARGET_NO_KERNEL)),true)
-ifneq ($(strip $(BOARD_USBIMAGE_PARTITION_SIZE)),)
-
-TARGET_OUT_USBMSC := $(PRODUCT_OUT)/usbmsc
-
-INTERNAL_USBMSC_FILES := \
-	$(filter $(TARGET_OUT_USBMSC)/%,$(ALL_DEFAULT_INSTALLED_MODULES))
-
-INSTALLED_USBIMAGE_TARGET := $(PRODUCT_OUT)/usbmsc.img
-
-define build-usbmscimage-target
-    $(call pretty,"Target usbmsc fs image: $(INSTALLED_USBIMAGE_TARGET)")
-    @mkdir -p $(TARGET_OUT_USBMSC)
-    $(hide) $(MKEXTUSERIMG) -s $(TARGET_OUT_USBMSC) $@ ext4 usbmsc $(BOARD_USBIMAGE_PARTITION_SIZE)
-    $(hide) chmod a+r $@
-    $(hide) $(call assert-max-image-size,$@,$(BOARD_USBIMAGE_PARTITION_SIZE),yaffs)
+ifneq ($(strip $(BOARD_USBIMAGE_PARTITION_SIZE_KB)),)
+define build-usbimage-target
+	$(hide) mkfs.vfat -n "Internal SD" -F 32 -C $(PRODUCT_OUT)/usbdisk.tmp $(BOARD_USBIMAGE_PARTITION_SIZE_KB)
+	$(hide) dd if=$(PRODUCT_OUT)/usbdisk.tmp of=$(INSTALLED_USBIMAGE_TARGET) bs=1024 count=20480
+	$(hide) rm -f $(PRODUCT_OUT)/usbdisk.tmp
 endef
 
-$(INSTALLED_USBIMAGE_TARGET): $(MKEXTUSERIMG) $(MAKE_EXT4FS) $(INTERNAL_USBMSC_FILES)
-	$(build-usbmscimage-target)
-
+$(INSTALLED_USBIMAGE_TARGET):
+	$(build-usbimage-target)
 ALL_DEFAULT_INSTALLED_MODULES += $(INSTALLED_USBIMAGE_TARGET)
-ALL_MODULES.$(LOCAL_MODULE).INSTALLED += $(INSTALLED_USBIMAGE_TARGET)
-
+ALL_MODULES.$(LOCAL_MODULE).INSTALLED += $(INSTALLED_DTIMAGE_TARGET)
 endif
-endif
-#----------------------------------------------------------------------
-# Generate CDROM image
-#----------------------------------------------------------------------
-CDROM_RES_FILE := $(TARGET_DEVICE_DIR)/cdrom_res
-CDROM_DUMMY_FILE := $(TARGET_DEVICE_DIR)/cdrom_res/zero.bin
-
-ifneq ($(wildcard $(CDROM_RES_FILE)),)
-CDROM_ISO_TARGET := $(PRODUCT_OUT)/system/etc/cdrom_install.iso
-#delete the dummy file if it already exists.
-ifneq ($(wildcard $(CDROM_DUMMY_FILE)),)
-$(shell rm -f $(CDROM_DUMMY_FILE))
-endif
-CDROM_RES_SIZE := $(shell du -bs $(CDROM_RES_FILE) | egrep -o '^[0-9]+')
-#At least 300 sectors, 2048Bytes per Sector, set as 310 here
-CDROM_MIN_SIZE := 634880
-CDROM_CAPACITY_IS_ENOUGH := $(shell expr $(CDROM_RES_SIZE) / $(CDROM_MIN_SIZE))
-ifeq ($(CDROM_CAPACITY_IS_ENOUGH),0)
-CDROM_DUMMY_SIZE := $(shell expr $(CDROM_MIN_SIZE) - $(CDROM_RES_SIZE))
-CDROM_DUMMY_SIZE_KB := $(shell expr `expr $(CDROM_DUMMY_SIZE) + 1023` / 1024)
-$(shell dd if=/dev/zero of=$(CDROM_RES_FILE)/zero.bin bs=1024 count=$(CDROM_DUMMY_SIZE_KB))
-endif
-
-define build-cdrom-target
-    @mkdir -p $(PRODUCT_OUT)/system/etc
-    $(hide) mkisofs -o $(CDROM_ISO_TARGET)  $(CDROM_RES_FILE)
-endef
-
-$(CDROM_ISO_TARGET): $(CDROM_RES_FILE)
-	$(build-cdrom-target)
-
-ALL_DEFAULT_INSTALLED_MODULES += $(CDROM_ISO_TARGET)
-ALL_MODULES.$(LOCAL_MODULE).INSTALLED += $(CDROM_ISO_TARGET)
-endif
-#---------------------------------------------------------------------
-#Generate the SingleImage.bin / MMC_FLASHMEM1.dat
-#---------------------------------------------------------------------
-ifeq ($(strip $(BOARD_DISK_ANDROID_IMG)),true)
-DISK_IMG_TOOL := $(HOST_OUT_EXECUTABLES)/singleimage.py
-$(call pretty,"Android Disk Image for simulator: $(DISK_IMG_TOOL)")
-
-INSTALLED_DISK_IMG_TARGET := $(PRODUCT_OUT)/MMC_FLASHMEM1.dat
-$(call pretty,"Android Disk Image for simulator: $(INSTALLED_DISK_IMG_TARGET)")
-
-define build-disk-img-target
-	$(call pretty,"Android Disk Image for simulator: $(INSTALLED_DISK_IMG_TARGET)")
-	$(hide) $(DISK_IMG_TOOL) $(PRODUCT_OUT)
-	$(hide) mv $(PRODUCT_OUT)/singleimage.bin $(PRODUCT_OUT)/MMC_FLASHMEM1.dat
-endef
-
-$(INSTALLED_DISK_IMG_TARGET): $(INSTALLED_BOOTIMAGE_TARGET) $(INSTALLED_RAMDISK_TARGET) $(INSTALLED_SYSTEMIMAGE) $(INSTALLED_USERDATAIMAGE_TARGET) $(INSTALLED_RECOVERYIMAGE_TARGET) $(BUILT_CACHEIMAGE_TARGET) $(DISK_IMG_TOOL)
-	$(build-disk-img-target)
-ALL_DEFAULT_INSTALLED_MODULES += $(INSTALLED_DISK_IMG_TARGET)
-ALL_MODULES.$(LOCAL_MODULE).INSTALLED += $(INSTALLED_DISK_IMG_TARGET)
-endif
-
-NAND_BOOTIMAGE_ARGS := \
-	--kernel $(INSTALLED_KERNEL_TARGET) \
-	--ramdisk $(INSTALLED_RAMDISK_TARGET) \
-	--cmdline "$(BOARD_KERNEL_CMDLINE)" \
-	--base $(BOARD_KERNEL_BASE)
-
-NAND_RECOVERYIMAGE_ARGS := \
-	--kernel $(INSTALLED_KERNEL_TARGET) \
-	--ramdisk $(recovery_ramdisk) \
-	--cmdline "$(BOARD_KERNEL_CMDLINE)" \
-	--base $(BOARD_KERNEL_BASE)
-
-#----------------------------------------------------------------------
-# Generate NAND images
-#----------------------------------------------------------------------
-ifeq ($(call is-board-platform-in-list,msm7627a msm7630_surf msm8909),true)
-ifeq ($(strip $(TARGET_BOARD_SUFFIX)),_256)
-2K_NAND_OUT := $(PRODUCT_OUT)/2k_nand_images
-
-UBINIZE_SYSTEM_CFG := $(2K_NAND_OUT)/ubinize_system.cfg
-UBINIZE_USERDATA_CFG := $(2K_NAND_OUT)/ubinize_userdata.cfg
-UBINIZE_USBMSC_CFG := $(2K_NAND_OUT)/ubinize_usbmsc.cfg
-
-INSTALLED_UBIFS_SYSTEMIMAGE_TARGET := $(2K_NAND_OUT)/system.ubifs
-INSTALLED_UBIFS_USERDATAIMAGE_TARGET := $(2K_NAND_OUT)/userdata.ubifs
-INSTALLED_UBIFS_PERSISTIMAGE_TARGET := $(2K_NAND_OUT)/persist.ubifs
-
-#-F: allow space-fixup during first boot
-#ref: http://www.linux-mtd.infradead.org/faq/ubifs.html#L_free_space_fixup
-INTERNAL_MKFSUBIFS_FLAGS := -m 2048 -e 126976 -v -F
-INTERNAL_MKFSUBIFS_PERSIST_FLAGS := -m 2048 -e 126976 -j 5000000 -v -F
-INSTALLED_UBINIZE_SYSTEM_TARGET := $(2K_NAND_OUT)/system.ubi
-INSTALLED_UBINIZE_USERDATA_TARGET := $(2K_NAND_OUT)/userdata.ubi
-INSTALLED_UBINIZE_USBMSC_TARGET := $(2K_NAND_OUT)/usbmsc.ubi
-INTERNAL_UBINIZE_FLAGS := -m 2048 -p 128KiB -s 2048 -v
-
-INSTALLED_2K_BOOTIMAGE_TARGET := $(2K_NAND_OUT)/boot.img
-INSTALLED_2K_SYSTEMIMAGE_TARGET := $(2K_NAND_OUT)/system.img
-INSTALLED_2K_USERDATAIMAGE_TARGET := $(2K_NAND_OUT)/userdata.img
-INSTALLED_2K_PERSISTIMAGE_TARGET := $(2K_NAND_OUT)/persist.img
-INSTALLED_2K_RECOVERYIMAGE_TARGET := $(2K_NAND_OUT)/recovery.img
-INSTALLED_2K_CACHEIMAGE_TARGET := $(2K_NAND_OUT)/cache.img
-
-recovery_nand_fstab := $(TARGET_DEVICE_DIR)/recovery_nand.fstab
-
-NAND_BOOTIMAGE_ARGS := \
-        --kernel $(INSTALLED_KERNEL_TARGET) \
-        --ramdisk $(INSTALLED_RAMDISK_TARGET) \
-        --cmdline "$(BOARD_KERNEL_CMDLINE)" \
-        --base $(BOARD_KERNEL_BASE)
-
-NAND_RECOVERYIMAGE_ARGS := \
-        --kernel $(INSTALLED_KERNEL_TARGET) \
-        --ramdisk $(recovery_ramdisk) \
-        --cmdline "$(BOARD_KERNEL_CMDLINE)" \
-        --base $(BOARD_KERNEL_BASE)
-
-
-INTERNAL_2K_BOOTIMAGE_ARGS := $(NAND_BOOTIMAGE_ARGS)
-INTERNAL_2K_BOOTIMAGE_ARGS += --pagesize $(BOARD_KERNEL_2KPAGESIZE)
-
-INTERNAL_2K_MKYAFFS2_FLAGS := -c $(BOARD_KERNEL_2KPAGESIZE)
-INTERNAL_2K_MKYAFFS2_FLAGS += -s $(BOARD_KERNEL_2KSPARESIZE)
-
-INTERNAL_2K_RECOVERYIMAGE_ARGS := $(NAND_RECOVERYIMAGE_ARGS)
-INTERNAL_2K_RECOVERYIMAGE_ARGS += --pagesize $(BOARD_KERNEL_2KPAGESIZE)
-
-ifeq ($(call is-board-platform-in-list,msm7627a msm7630_surf msm8909),true)
-
-4K_NAND_OUT := $(PRODUCT_OUT)/4k_nand_images
-BCHECC_OUT := $(PRODUCT_OUT)/bchecc_images
-
-UBINIZE_4K_SYSTEM_CFG := $(4K_NAND_OUT)/ubinize_system.cfg
-UBINIZE_4K_USERDATA_CFG := $(4K_NAND_OUT)/ubinize_userdata.cfg
-UBINIZE_4K_USBMSC_CFG := $(4K_NAND_OUT)/ubinize_usbmsc.cfg
-
-INSTALLED_UBIFS_4K_SYSTEMIMAGE_TARGET := $(4K_NAND_OUT)/system.ubifs
-INSTALLED_UBIFS_4K_USERDATAIMAGE_TARGET := $(4K_NAND_OUT)/userdata.ubifs
-INSTALLED_UBIFS_4K_PERSISTIMAGE_TARGET := $(4K_NAND_OUT)/persist.ubifs
-
-#-F: allow space-fixup during first boot
-#ref: http://www.linux-mtd.infradead.org/faq/ubifs.html#L_free_space_fixup
-INTERNAL_MKFSUBIFS_4K_FLAGS := -m 4096 -e 253952 -v -F
-INTERNAL_MKFSUBIFS_4K_PERSIST_FLAGS := -m 4096 -e 253952 -j 2MiB -v -F
-INSTALLED_UBINIZE_4K_SYSTEM_TARGET := $(4K_NAND_OUT)/system.ubi
-INSTALLED_UBINIZE_4K_USERDATA_TARGET := $(4K_NAND_OUT)/userdata.ubi
-INSTALLED_UBINIZE_4K_USBMSC_TARGET := $(4K_NAND_OUT)/usbmsc.ubi
-INTERNAL_UBINIZE_4K_FLAGS := -m 4096 -p 256KiB -s 4096 -v
-
-INSTALLED_4K_BOOTIMAGE_TARGET := $(4K_NAND_OUT)/boot.img
-INSTALLED_4K_SYSTEMIMAGE_TARGET := $(4K_NAND_OUT)/system.img
-INSTALLED_4K_USERDATAIMAGE_TARGET := $(4K_NAND_OUT)/userdata.img
-INSTALLED_4K_PERSISTIMAGE_TARGET := $(4K_NAND_OUT)/persist.img
-INSTALLED_4K_RECOVERYIMAGE_TARGET := $(4K_NAND_OUT)/recovery.img
-
-INSTALLED_BCHECC_BOOTIMAGE_TARGET := $(BCHECC_OUT)/boot.img
-INSTALLED_BCHECC_SYSTEMIMAGE_TARGET := $(BCHECC_OUT)/system.img
-INSTALLED_BCHECC_USERDATAIMAGE_TARGET := $(BCHECC_OUT)/userdata.img
-INSTALLED_BCHECC_PERSISTIMAGE_TARGET := $(BCHECC_OUT)/persist.img
-INSTALLED_BCHECC_RECOVERYIMAGE_TARGET := $(BCHECC_OUT)/recovery.img
-
-INTERNAL_4K_BOOTIMAGE_ARGS := $(NAND_BOOTIMAGE_ARGS)
-INTERNAL_4K_BOOTIMAGE_ARGS += --pagesize $(BOARD_KERNEL_4KPAGESIZE)
-
-INTERNAL_4K_MKYAFFS2_FLAGS := -c $(BOARD_KERNEL_4KPAGESIZE)
-INTERNAL_4K_MKYAFFS2_FLAGS += -s $(BOARD_KERNEL_4KSPARESIZE)
-
-INTERNAL_BCHECC_MKYAFFS2_FLAGS := -c $(BOARD_KERNEL_4KPAGESIZE)
-INTERNAL_BCHECC_MKYAFFS2_FLAGS += -s $(BOARD_KERNEL_BCHECC_SPARESIZE)
-
-INTERNAL_4K_RECOVERYIMAGE_ARGS := $(NAND_RECOVERYIMAGE_ARGS)
-INTERNAL_4K_RECOVERYIMAGE_ARGS += --pagesize $(BOARD_KERNEL_4KPAGESIZE)
-
-endif
-endif
-
-recovery_nand_fstab := $(TARGET_DEVICE_DIR)/recovery_nand.fstab
-
-# Generate boot image for NAND
-ifeq ($(TARGET_BOOTIMG_SIGNED),true)
-
-ifndef TARGET_SHA_TYPE
-  TARGET_SHA_TYPE := sha256
-endif
-
-define build-nand-bootimage
-	@echo "target NAND boot image: $(3)"
-	$(hide) mkdir -p $(1)
-	$(hide) $(MKBOOTIMG) $(2) --output $(3).nonsecure
-	$(hide) openssl dgst -$(TARGET_SHA_TYPE)  -binary $(3).nonsecure > $(3).$(TARGET_SHA_TYPE)
-	$(hide) openssl rsautl -sign -in $(3).$(TARGET_SHA_TYPE) -inkey $(PRODUCT_PRIVATE_KEY) -out $(3).sig
-	$(hide) dd if=/dev/zero of=$(3).sig.padded bs=$(BOARD_KERNEL_PAGESIZE) count=1
-	$(hide) dd if=$(3).sig of=$(3).sig.padded conv=notrunc
-	$(hide) cat $(3).nonsecure $(3).sig.padded > $(3)
-	$(hide) rm -rf $(3).$(TARGET_SHA_TYPE) $(3).sig $(3).sig.padded
-endef
-else
-define build-nand-bootimage
-	@echo "target NAND boot image: $(3)"
-	$(hide) mkdir -p $(1)
-	$(hide) $(MKBOOTIMG) $(2) --output $(3)
-	$(BOOT_SIGNER) /boot $(3) $(PRODUCTS.$(INTERNAL_PRODUCT).PRODUCT_VERITY_SIGNING_KEY).pk8 $(PRODUCTS.$(INTERNAL_PRODUCT).PRODUCT_VERITY_SIGNING_KEY).x509.pem $(3)
-	$(hide) $(call assert-max-image-size,$@,$(BOARD_BOOTIMAGE_PARTITION_SIZE),raw)
-endef
-endif
-
-define build-nand-recoveryimage
-	@echo "target NAND recovery image: $(3)"
-	$(hide) mkdir -p $(1)
-	$(hide) $(MKBOOTIMG) $(2) --output $(3)
-	$(BOOT_SIGNER) /recovery $(3) $(PRODUCTS.$(INTERNAL_PRODUCT).PRODUCT_VERITY_SIGNING_KEY).pk8 $(PRODUCTS.$(INTERNAL_PRODUCT).PRODUCT_VERITY_SIGNING_KEY).x509.pem $(3)
-	$(hide) $(call assert-max-image-size,$@,$(BOARD_RECOVERYIMAGE_PARTITION_SIZE),raw)
-endef
-
-# Generate system image for NAND
-define build-nand-systemimage
-  @echo "target NAND system image: $(3)"
-  $(hide) mkdir -p $(1)
-  $(hide) $(MKYAFFS2) -f $(2) $(TARGET_OUT) $(3)
-  $(hide) chmod a+r $(3)
-  $(hide) $(call assert-max-image-size,$@,$(BOARD_SYSTEMIMAGE_PARTITION_SIZE),yaffs)
-endef
-
-# Generate userdata image for NAND
-define build-nand-userdataimage
-  @echo "target NAND userdata image: $(3)"
-  $(hide) mkdir -p $(1)
-  $(hide) $(MKYAFFS2) -f $(2) $(TARGET_OUT_DATA) $(3)
-  $(hide) chmod a+r $(3)
-  $(hide) $(call assert-max-image-size,$@,$(BOARD_USERDATAIMAGE_PARTITION_SIZE),yaffs)
-endef
-
-# Generate persist image for NAND
-define build-nand-persistimage
-  @echo "target NAND persist image: $(3)"
-  $(hide) mkdir -p $(1)
-  $(hide) $(MKYAFFS2) $(2) $(TARGET_OUT_PERSIST) $(3)
-  $(hide) chmod a+r $(3)
-  $(hide) $(call assert-max-image-size,$@,$(BOARD_PERSISTIMAGE_PARTITION_SIZE),yaffs)
-endef
-
-# Generate cache image for NAND
-define build-nand-cacheimage
-  @echo "target NAND cache image: $(3)"
-  $(hide) mkdir -p $(1)
-  $(hide) $(MKYAFFS2) $(2) $(TARGET_OUT_CACHE) $(3)
-  $(hide) chmod a+r $(3)
-  $(hide) $(call assert-max-image-size,$@,$(BOARD_CACHEIMAGE_PARTITION_SIZE),yaffs)
-endef
-
-
-# Generate persist.ubifs image for NAND
-define build-nand-ubifs-persistimage
-  @echo "target NAND persist image: $(3)"
-  (set -o pipefail; cd $(PRODUCT_OUT) && find persist/ -mindepth 1 | $(CURDIR)/$(HOST_OUT_EXECUTABLES)/mkdevtbl > persist.dt)
-  $(hide) mkdir -p $(1)
-  $(hide) $(MKFSUBIFS) $(2) $(3) -c 562 -D $(PRODUCT_OUT)/persist.dt -r $(PRODUCT_OUT)/persist
-  $(hide) chmod a+r $(3)
-  $(hide) $(call assert-max-image-size,$@,$(BOARD_PERSISTIMAGE_PARTITION_SIZE),yaffs)
-endef
-
-#Generate recovery from boot patch
-define build-recovery-from-boot-patch
-  $(hide) cp -r $(1)/boot.img $(ota_temp_root)/BOOTABLE_IMAGES/
-  $(hide) cp -r $(1)/recovery.img $(ota_temp_root)/BOOTABLE_IMAGES/
-  $(hide) ./build/tools/releasetools/make_recovery_patch $(ota_temp_root) $(ota_temp_root)
-  $(hide) cp -f $(ota_temp_root)/SYSTEM/bin/install-recovery.sh $(TARGET_OUT)/bin/install-recovery.sh
-  $(hide) cp -f $(ota_temp_root)/SYSTEM/recovery-from-boot.p $(TARGET_OUT)/recovery-from-boot.p
-endef
-
-# Generate UBIFS images for NAND
-define build-nand-ubifs-systemimage
-  @echo "target UBIFS NAND system image: $(3)"
-  (set -o pipefail; cd $(PRODUCT_OUT) && find system/ -mindepth 1 | $(CURDIR)/$(HOST_OUT_EXECUTABLES)/mkdevtbl > system.dt)
-  $(hide) mkdir -p $(1)
-  $(call build-recovery-from-boot-patch,$(1))
-  $(MKFSUBIFS) $(2) $(3) -c 2555 -D $(PRODUCT_OUT)/system.dt -r $(PRODUCT_OUT)/system
-  $(hide) chmod a+r $(3)
-  $(hide) $(call assert-max-image-size,$@,$(BOARD_SYSTEMIMAGE_PARTITION_SIZE),ubifs)
-endef
-
-define build-nand-ubifs-userdataimage
-  @echo "target UBIFS NAND userdata image: $(3)"
-  (set -o pipefail; cd $(PRODUCT_OUT) && find data/ -mindepth 1 | $(CURDIR)/$(HOST_OUT_EXECUTABLES)/mkdevtbl > data.dt)
-  $(hide) mkdir -p $(1)
-  $(MKFSUBIFS) $(2) $(3) -c 562 -D $(PRODUCT_OUT)/data.dt -r $(PRODUCT_OUT)/data
-  $(hide) chmod a+r $(3)
-  $(hide) $(call assert-max-image-size,$@,$(BOARD_USERDATAIMAGE_PARTITION_SIZE),ubifs)
-endef
-
-define create_system_ubinize_config
-  echo \[system_volume\] > "$(1)"
-  echo mode=ubi >> "$(1)"
-  echo image="$(2)" >> "$(1)"
-  echo vol_id=0 >> "$(1)"
-  echo vol_type=dynamic >> "$(1)"
-  echo vol_name=system >> "$(1)"
-  # Reserve 5MB for pushing and syncing with adb
-  echo vol_size=191MiB >> "$(1)"
-endef
-
-define create_userdata_ubinize_config
-  echo \[userdata_volume\] > "$(1)"
-  echo mode=ubi >> "$(1)"
-  echo image="$(2)" >> "$(1)"
-  echo vol_id=0 >> "$(1)"
-  echo vol_type=dynamic >> "$(1)"
-  echo vol_name=userdata >> "$(1)"
-  echo vol_flags=autoresize >> "$(1)"
-
-  echo \[cache_volume\] >> "$(1)"
-  echo mode=ubi >> "$(1)"
-  echo vol_id=1 >> "$(1)"
-  echo vol_type=dynamic >> "$(1)"
-  echo vol_name=cache >> "$(1)"
-  echo vol_size=89MiB >> "$(1)"
-
-  echo \[persist_volume\] >> "$(1)"
-  echo mode=ubi >> "$(1)"
-  echo vol_id=2 >> "$(1)"
-  echo image="$(3)" >> "$(1)"
-  echo vol_type=dynamic >> "$(1)"
-  echo vol_name=persist >> "$(1)"
-  echo vol_size=6MiB >> "$(1)"
-endef
-
-
-define create_usbmsc_ubinize_config
-  echo \[usbmsc_volume\] > "$(1)"
-  echo mode=ubi >> "$(1)"
-  echo vol_id=0 >> "$(1)"
-  echo vol_type=dynamic >> "$(1)"
-  echo vol_name=usbmsc >> "$(1)"
-  echo vol_size=30MiB >> "$(1)"
-  echo vol_flags=autoresize >> "$(1)"
-endef
-
-
-ifeq ($(call is-board-platform,msm8909),true)
-
-$(INSTALLED_UBIFS_SYSTEMIMAGE_TARGET): $(MKFSUBIFS) $(MKDEVTBL) $(INSTALLED_SYSTEMIMAGE)
-	$(call build-nand-ubifs-systemimage,$(2K_NAND_OUT),$(INTERNAL_MKFSUBIFS_FLAGS),$(INSTALLED_UBIFS_SYSTEMIMAGE_TARGET))
-
-$(INSTALLED_UBIFS_USERDATAIMAGE_TARGET): $(MKFSUBIFS) $(MKDEVTBL) $(INSTALLED_USERDATAIMAGE_TARGET)
-	$(call build-nand-ubifs-userdataimage,$(2K_NAND_OUT),$(INTERNAL_MKFSUBIFS_FLAGS),$(INSTALLED_UBIFS_USERDATAIMAGE_TARGET))
-
-$(INSTALLED_UBIFS_PERSISTIMAGE_TARGET): $(MKFSUBIFS) $(MKDEVTBL) $(INSTALLED_PERSISTIMAGE_TARGET)
-	$(call build-nand-ubifs-persistimage,$(2K_NAND_OUT),$(INTERNAL_MKFSUBIFS_PERSIST_FLAGS),$(INSTALLED_UBIFS_PERSISTIMAGE_TARGET))
-
-$(INSTALLED_UBINIZE_SYSTEM_TARGET): $(UBINIZE) $(INSTALLED_UBIFS_SYSTEMIMAGE_TARGET)
-	$(call create_system_ubinize_config,$(UBINIZE_SYSTEM_CFG),$(INSTALLED_UBIFS_SYSTEMIMAGE_TARGET))
-	$(UBINIZE) -o $@ $(INTERNAL_UBINIZE_FLAGS) $(UBINIZE_SYSTEM_CFG)
-
-$(INSTALLED_UBINIZE_USERDATA_TARGET): $(UBINIZE) $(INSTALLED_UBIFS_USERDATAIMAGE_TARGET) $(INSTALLED_UBIFS_PERSISTIMAGE_TARGET)
-	$(call create_userdata_ubinize_config,$(UBINIZE_USERDATA_CFG),$(INSTALLED_UBIFS_USERDATAIMAGE_TARGET),$(INSTALLED_UBIFS_PERSISTIMAGE_TARGET))
-	$(UBINIZE) -o $@ $(INTERNAL_UBINIZE_FLAGS) $(UBINIZE_USERDATA_CFG)
-
-$(INSTALLED_UBINIZE_USBMSC_TARGET): $(UBINIZE)
-	$(hide) mkdir -p $(2K_NAND_OUT)
-	$(call create_usbmsc_ubinize_config,$(UBINIZE_USBMSC_CFG))
-	$(UBINIZE) -o $@ $(INTERNAL_UBINIZE_FLAGS) $(UBINIZE_USBMSC_CFG)
-
-ALL_DEFAULT_INSTALLED_MODULES += \
-        $(INSTALLED_UBINIZE_SYSTEM_TARGET) \
-	$(INSTALLED_UBINIZE_USERDATA_TARGET) \
-        $(INSTALLED_UBINIZE_USBMSC_TARGET)
-
-$(INSTALLED_2K_BOOTIMAGE_TARGET): $(MKBOOTIMG) $(INSTALLED_BOOTIMAGE_TARGET) $(BOOT_SIGNER)
-	$(hide) $(call build-nand-bootimage,$(2K_NAND_OUT),$(INTERNAL_2K_BOOTIMAGE_ARGS),$(INSTALLED_2K_BOOTIMAGE_TARGET))
-
-$(INSTALLED_2K_SYSTEMIMAGE_TARGET): $(MKYAFFS2) $(INSTALLED_SYSTEMIMAGE)
-	$(hide) $(call build-nand-systemimage,$(2K_NAND_OUT),$(INTERNAL_2K_MKYAFFS2_FLAGS),$(INSTALLED_2K_SYSTEMIMAGE_TARGET))
-
-$(INSTALLED_2K_USERDATAIMAGE_TARGET): $(MKYAFFS2) $(INSTALLED_USERDATAIMAGE_TARGET)
-	$(hide) $(call build-nand-userdataimage,$(2K_NAND_OUT),$(INTERNAL_2K_MKYAFFS2_FLAGS),$(INSTALLED_2K_USERDATAIMAGE_TARGET))
-
-$(INSTALLED_2K_PERSISTIMAGE_TARGET): $(MKYAFFS2) $(INSTALLED_PERSISTIMAGE_TARGET) $(INSTALLED_UBIFS_PERSISTIMAGE_TARGET)
-	$(hide) $(call build-nand-persistimage,$(2K_NAND_OUT),$(INTERNAL_2K_MKYAFFS2_FLAGS),$(INSTALLED_2K_PERSISTIMAGE_TARGET))
-
-$(INSTALLED_2K_CACHEIMAGE_TARGET): $(MKYAFFS2) $(INSTALLED_CACHEIMAGE_TARGET)
-	$(hide) $(call build-nand-cacheimage,$(2K_NAND_OUT),$(INTERNAL_2K_MKYAFFS2_FLAGS),$(INSTALLED_2K_CACHEIMAGE_TARGET))
-
-$(INSTALLED_2K_RECOVERYIMAGE_TARGET): $(MKBOOTIMG) $(INSTALLED_RECOVERYIMAGE_TARGET) $(recovery_nand_fstab) $(BOOT_SIGNER)
-	$(hide) cp -f $(recovery_nand_fstab) $(TARGET_RECOVERY_ROOT_OUT)/etc/recovery.fstab
-	$(MKBOOTFS) $(TARGET_RECOVERY_ROOT_OUT) | $(MINIGZIP) > $(recovery_ramdisk)
-	$(hide) $(call build-nand-recoveryimage,$(2K_NAND_OUT),$(INTERNAL_2K_RECOVERYIMAGE_ARGS),$(INSTALLED_2K_RECOVERYIMAGE_TARGET))
-
-ALL_DEFAULT_INSTALLED_MODULES += \
-        $(INSTALLED_2K_BOOTIMAGE_TARGET) \
-        $(INSTALLED_2K_SYSTEMIMAGE_TARGET) \
-        $(INSTALLED_2K_USERDATAIMAGE_TARGET) \
-        $(INSTALLED_2K_PERSISTIMAGE_TARGET) \
-        $(INSTALLED_2K_CACHEIMAGE_TARGET)
-
-ALL_MODULES.$(LOCAL_MODULE).INSTALLED += \
-        $(INSTALLED_2K_BOOTIMAGE_TARGET) \
-        $(INSTALLED_2K_SYSTEMIMAGE_TARGET) \
-        $(INSTALLED_2K_USERDATAIMAGE_TARGET) \
-        $(INSTALLED_2K_PERSISTIMAGE_TARGET)
-
-ifneq ($(BUILD_TINY_ANDROID),true)
-ALL_DEFAULT_INSTALLED_MODULES += $(INSTALLED_2K_RECOVERYIMAGE_TARGET)
-ALL_MODULES.$(LOCAL_MODULE).INSTALLED += $(INSTALLED_2K_RECOVERYIMAGE_TARGET)
-endif # !BUILD_TINY_ANDROID
-
-endif # is-board-platform-in-list
-
-ifeq ($(call is-board-platform-in-list,msm8909),true)
-
-$(INSTALLED_UBIFS_4K_SYSTEMIMAGE_TARGET): $(MKFSUBIFS) $(MKDEVTBL) $(INSTALLED_SYSTEMIMAGE) $(INSTALLED_UBIFS_SYSTEMIMAGE_TARGET)
-	$(call build-nand-ubifs-systemimage,$(4K_NAND_OUT),$(INTERNAL_MKFSUBIFS_4K_FLAGS),$(INSTALLED_UBIFS_4K_SYSTEMIMAGE_TARGET))
-
-$(INSTALLED_UBIFS_4K_USERDATAIMAGE_TARGET): $(MKFSUBIFS) $(MKDEVTBL) $(INSTALLED_4K_USERDATAIMAGE_TARGET) $(INSTALLED_UBIFS_USERDATAIMAGE_TARGET)
-	$(call build-nand-ubifs-userdataimage,$(4K_NAND_OUT),$(INTERNAL_MKFSUBIFS_4K_FLAGS),$(INSTALLED_UBIFS_4K_USERDATAIMAGE_TARGET))
-
-$(INSTALLED_UBIFS_4K_PERSISTIMAGE_TARGET): $(MKFSUBIFS) $(MKDEVTBL) $(INSTALLED_4K_PERSISTIMAGE_TARGET) $(INSTALLED_UBIFS_PERSISTIMAGE_TARGET)
-	$(call build-nand-ubifs-persistimage,$(4K_NAND_OUT),$(INTERNAL_MKFSUBIFS_4K_PERSIST_FLAGS),$(INSTALLED_UBIFS_4K_PERSISTIMAGE_TARGET))
-
-$(INSTALLED_UBINIZE_4K_SYSTEM_TARGET): $(UBINIZE) $(INSTALLED_UBIFS_4K_SYSTEMIMAGE_TARGET) $(INSTALLED_UBINIZE_SYSTEM_TARGET)
-	$(call create_system_ubinize_config,$(UBINIZE_4K_SYSTEM_CFG),$(INSTALLED_UBIFS_4K_SYSTEMIMAGE_TARGET))
-	$(UBINIZE) -o $@ $(INTERNAL_UBINIZE_4K_FLAGS) $(UBINIZE_4K_SYSTEM_CFG)
-
-$(INSTALLED_UBINIZE_4K_USERDATA_TARGET): $(UBINIZE) $(INSTALLED_UBIFS_4K_USERDATAIMAGE_TARGET) $(INSTALLED_UBIFS_4K_PERSISTIMAGE_TARGET) $(INSTALLED_UBINIZE_USERDATA_TARGET)
-	$(call create_userdata_ubinize_config,$(UBINIZE_4K_USERDATA_CFG),$(INSTALLED_UBIFS_4K_USERDATAIMAGE_TARGET),$(INSTALLED_UBIFS_4K_PERSISTIMAGE_TARGET))
-	$(UBINIZE) -o $@ $(INTERNAL_UBINIZE_4K_FLAGS) $(UBINIZE_4K_USERDATA_CFG)
-
-$(INSTALLED_UBINIZE_4K_USBMSC_TARGET): $(UBINIZE)
-	$(hide) mkdir -p $(4K_NAND_OUT)
-	$(call create_usbmsc_ubinize_config,$(UBINIZE_4K_USBMSC_CFG))
-	$(UBINIZE) -o $@ $(INTERNAL_UBINIZE_4K_FLAGS) $(UBINIZE_4K_USBMSC_CFG)
-
-ALL_DEFAULT_INSTALLED_MODULES += \
-        $(INSTALLED_UBINIZE_4K_SYSTEM_TARGET) \
-	$(INSTALLED_UBINIZE_4K_USERDATA_TARGET) \
-        $(INSTALLED_UBINIZE_4K_USBMSC_TARGET)
-
-$(INSTALLED_4K_BOOTIMAGE_TARGET): $(MKBOOTIMG) $(INSTALLED_BOOTIMAGE_TARGET) $(BOOT_SIGNER) $(INSTALLED_2K_BOOTIMAGE_TARGET)
-	$(hide) $(call build-nand-bootimage,$(4K_NAND_OUT),$(INTERNAL_4K_BOOTIMAGE_ARGS),$(INSTALLED_4K_BOOTIMAGE_TARGET))
-
-$(INSTALLED_4K_SYSTEMIMAGE_TARGET): $(MKYAFFS2) $(INSTALLED_SYSTEMIMAGE) $(INSTALLED_2K_SYSTEMIMAGE_TARGET)
-	$(hide) $(call build-nand-systemimage,$(4K_NAND_OUT),$(INTERNAL_4K_MKYAFFS2_FLAGS),$(INSTALLED_4K_SYSTEMIMAGE_TARGET))
-
-$(INSTALLED_4K_USERDATAIMAGE_TARGET): $(MKYAFFS2) $(INSTALLED_USERDATAIMAGE_TARGET) $(INSTALLED_2K_USERDATAIMAGE_TARGET)
-	$(hide) $(call build-nand-userdataimage,$(4K_NAND_OUT),$(INTERNAL_4K_MKYAFFS2_FLAGS),$(INSTALLED_4K_USERDATAIMAGE_TARGET))
-
-$(INSTALLED_4K_PERSISTIMAGE_TARGET): $(MKYAFFS2) $(INSTALLED_PERSISTIMAGE_TARGET) $(INSTALLED_2K_PERSISTIMAGE_TARGET)
-	$(hide) $(call build-nand-persistimage,$(4K_NAND_OUT),$(INTERNAL_4K_MKYAFFS2_FLAGS),$(INSTALLED_4K_PERSISTIMAGE_TARGET))
-
-
-$(INSTALLED_4K_RECOVERYIMAGE_TARGET): $(MKBOOTIMG) $(INSTALLED_RECOVERYIMAGE_TARGET) $(recovery_nand_fstab) $(INSTALLED_2K_RECOVERYIMAGE_TARGET)
-	$(hide) cp -f $(recovery_nand_fstab) $(TARGET_RECOVERY_ROOT_OUT)/etc/recovery.fstab
-	$(MKBOOTFS) $(TARGET_RECOVERY_ROOT_OUT) | $(MINIGZIP) > $(recovery_ramdisk)
-	$(hide) $(call build-nand-bootimage,$(4K_NAND_OUT),$(INTERNAL_4K_RECOVERYIMAGE_ARGS),$(INSTALLED_4K_RECOVERYIMAGE_TARGET))
-
-
-ALL_DEFAULT_INSTALLED_MODULES += \
-	$(INSTALLED_4K_BOOTIMAGE_TARGET) \
-	$(INSTALLED_4K_SYSTEMIMAGE_TARGET) \
-	$(INSTALLED_4K_USERDATAIMAGE_TARGET) \
-	$(INSTALLED_4K_PERSISTIMAGE_TARGET)
-
-ALL_MODULES.$(LOCAL_MODULE).INSTALLED += \
-	$(INSTALLED_4K_BOOTIMAGE_TARGET) \
-	$(INSTALLED_4K_SYSTEMIMAGE_TARGET) \
-	$(INSTALLED_4K_USERDATAIMAGE_TARGET) \
-	$(INSTALLED_4K_PERSISTIMAGE_TARGET)
-
-ifneq ($(BUILD_TINY_ANDROID),true)
-ALL_DEFAULT_INSTALLED_MODULES += $(INSTALLED_4K_RECOVERYIMAGE_TARGET)
-ALL_MODULES.$(LOCAL_MODULE).INSTALLED += $(INSTALLED_4K_RECOVERYIMAGE_TARGET)
-endif # !BUILD_TINY_ANDROID
-
-endif
-
-endif # is-board-platform-in-list
 
 #####################################################################################################
 # support for small user data image
@@ -644,7 +197,7 @@ define build-small-userdataimage
   $(hide) mkdir -p $(1)
   $(hide) $(MKEXTUSERIMG) -s $(TARGET_OUT_DATA) $(2) ext4 data $(BOARD_SMALL_USERDATAIMAGE_PARTITION_SIZE)
   $(hide) chmod a+r $@
-  $(hide) $(call assert-max-image-size,$@,$(BOARD_SMALL_USERDATAIMAGE_PARTITION_SIZE),yaffs)
+  $(hide) $(call assert-max-image-size,$@,$(BOARD_SMALL_USERDATAIMAGE_PARTITION_SIZE))
 endef
 
 
@@ -658,59 +211,62 @@ endif
 
 endif
 
-#----------------------------------------------------------------------
-# Compile (L)ittle (K)ernel bootloader and the nandwrite utility
-#----------------------------------------------------------------------
-ifneq ($(strip $(TARGET_NO_BOOTLOADER)),true)
-
-# Compile
-include bootable/bootloader/lk/AndroidBoot.mk
-
-$(INSTALLED_BOOTLOADER_MODULE): $(TARGET_EMMC_BOOTLOADER) | $(ACP)
-    $(transform-prebuilt-to-target)
-$(BUILT_TARGET_FILES_PACKAGE): $(INSTALLED_BOOTLOADER_MODULE)
-
-droidcore: $(INSTALLED_BOOTLOADER_MODULE)
-endif
-
-#----------------------------------------------------------------------
-# Generate secure boot image
-#----------------------------------------------------------------------
-ifeq ($(TARGET_BOOTIMG_SIGNED),true)
-.PHONY: bootimage
-bootimage: $(INSTALLED_BOOTIMAGE_TARGET) $(INSTALLED_SEC_BOOTIMAGE_TARGET)
-endif
-
 ###################################################################################################
-
-ifeq ($(TARGET_BOOTIMG_SIGNED),true)
-.PHONY: otapackage
-otapackage: $(INSTALLED_SEC_BOOTIMAGE_TARGET) $(INSTALLED_SEC_RECOVERYIMAGE_TARGET)
-endif
 
 .PHONY: aboot
 ifeq ($(USESECIMAGETOOL), true)
-aboot: gensecimage_target
+aboot: $(TARGET_SIGNED_BOOTLOADER) gensecimage_install
 else
 aboot: $(INSTALLED_BOOTLOADER_MODULE)
 endif
 
 .PHONY: kernel
-kernel: $(INSTALLED_BOOTIMAGE_TARGET) $(INSTALLED_SEC_BOOTIMAGE_TARGET) $(INSTALLED_4K_BOOTIMAGE_TARGET)
+kernel: $(INSTALLED_BOOTIMAGE_TARGET) $(INSTALLED_DTBOIMAGE_TARGET)
+
+.PHONY: dtboimage
+dtboimage: $(INSTALLED_DTBOIMAGE_TARGET)
 
 .PHONY: recoveryimage
-recoveryimage: $(INSTALLED_RECOVERYIMAGE_TARGET) $(INSTALLED_4K_RECOVERYIMAGE_TARGET)
+recoveryimage: $(INSTALLED_RECOVERYIMAGE_TARGET)
 
 .PHONY: kernelclean
 kernelclean:
-	$(hide) make -C kernel O=../$(PRODUCT_OUT)/obj/KERNEL_OBJ/ ARCH=$(TARGET_ARCH) CROSS_COMPILE=arm-eabi-  clean
-	$(hide) make -C kernel O=../$(PRODUCT_OUT)/obj/KERNEL_OBJ/ ARCH=$(TARGET_ARCH) CROSS_COMPILE=arm-eabi-  mrproper
-	$(hide) make -C kernel O=../$(PRODUCT_OUT)/obj/KERNEL_OBJ/ ARCH=$(TARGET_ARCH) CROSS_COMPILE=arm-eabi-  distclean
+	$(hide) make -C $(TARGET_KERNEL_SOURCE) O=$(KERNEL_TO_BUILD_ROOT_OFFSET)$(PRODUCT_OUT)/obj/KERNEL_OBJ/ ARCH=$(TARGET_ARCH) CROSS_COMPILE=arm-eabi-  clean
+	$(hide) make -C $(TARGET_KERNEL_SOURCE) O=$(KERNEL_TO_BUILD_ROOT_OFFSET)$(PRODUCT_OUT)/obj/KERNEL_OBJ/ ARCH=$(TARGET_ARCH) CROSS_COMPILE=arm-eabi-  mrproper
+	$(hide) make -C $(TARGET_KERNEL_SOURCE) O=$(KERNEL_TO_BUILD_ROOT_OFFSET)$(PRODUCT_OUT)/obj/KERNEL_OBJ/ ARCH=$(TARGET_ARCH) CROSS_COMPILE=arm-eabi-  distclean
 	$(hide) if [ -f "$(INSTALLED_BOOTIMAGE_TARGET)" ]; then  rm $(INSTALLED_BOOTIMAGE_TARGET); fi
-	$(hide) if [ -f "$(INSTALLED_SEC_BOOTIMAGE_TARGET)" ]; then rm $(INSTALLED_SEC_BOOTIMAGE_TARGET); fi
 	$(hide) if [ -f "$(INSTALLED_BOOTIMAGE_TARGET).nonsecure" ]; then  rm $(INSTALLED_BOOTIMAGE_TARGET).nonsecure; fi
 	$(hide) if [ -f "$(PRODUCT_OUT)/kernel" ]; then  rm $(PRODUCT_OUT)/kernel; fi
-	$(hide) if [ -f "$(INSTALLED_4K_BOOTIMAGE_TARGET)" ]; then rm  $(INSTALLED_4K_BOOTIMAGE_TARGET); fi
-	$(hide) if [ -f "$(INSTALLED_2K_BOOTIMAGE_TARGET)" ]; then rm  $(INSTALLED_2K_BOOTIMAGE_TARGET); fi
-	$(hide) if [ -f "$(INSTALLED_BCHECC_BOOTIMAGE_TARGET)" ]; then rm  $(INSTALLED_BCHECC_BOOTIMAGE_TARGET); fi
 	@echo "kernel cleanup done"
+
+# Set correct dependency for kernel modules
+ifneq ($(BOARD_VENDOR_KERNEL_MODULES),)
+$(BOARD_VENDOR_KERNEL_MODULES): $(INSTALLED_BOOTIMAGE_TARGET)
+endif
+ifneq ($(BOARD_RECOVERY_KERNEL_MODULES),)
+$(BOARD_RECOVERY_KERNEL_MODULES): $(INSTALLED_BOOTIMAGE_TARGET)
+endif
+
+define board-vendorkernel-ota
+  $(call pretty,"Processing following kernel modules for vendor: $(BOARD_VENDOR_KERNEL_MODULES)")
+  $(if $(BOARD_VENDOR_KERNEL_MODULES), \
+    $(call build-image-kernel-modules,$(BOARD_VENDOR_KERNEL_MODULES),$(TARGET_OUT_VENDOR),vendor/,$(call intermediates-dir-for,PACKAGING,depmod_vendor)))
+endef
+
+# Adding support for vendor module for OTA
+ifeq ($(ENABLE_VENDOR_IMAGE), false)
+.PHONY: otavendormod
+otavendormod: $(BOARD_VENDOR_KERNEL_MODULES)
+	$(board-vendorkernel-ota)
+
+.PHONY: otavendormod-nodeps
+otavendormod-nodeps:
+	@echo "make board-vendorkernel-ota: ignoring dependencies"
+	$(board-vendorkernel-ota)
+
+$(BUILT_SYSTEMIMAGE): otavendormod
+
+endif
+
+#Print PRODUCT_PACKAGES & PRODUCT_PACKAGES_DEBUG to output log
+$(call dump-products)
